@@ -6,7 +6,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/bwmarrin/discordgo"
@@ -42,21 +41,85 @@ func Gerar() *cli.App {
 	if err != nil {
 		log.Fatalf("Erro ao criar a sessão do Discord: %v", err)
 	}
-
-	// Registra o manipulador de mensagens
-	dg.AddHandler(messageHandler)
-
+	// Configurar Intents
+	dg.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages
+	// Registra o manipulador de interações
+	dg.AddHandler(interactionHandler)
 	// Abre a conexão com o Discord
 	err = dg.Open()
 	if err != nil {
 		log.Fatalf("Erro ao abrir a conexão com o Discord: %v", err)
 	}
 
+	log.Println("Conectando ao Discord...") // Adicione um log aqui para depuração
+
+	// Registrar comandos de barra
+	for _, command := range app.Commands {
+		_, err := dg.ApplicationCommandCreate(dg.State.User.ID, "", &discordgo.ApplicationCommand{
+			Name:        command.Name,
+			Description: command.Usage,
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "host",
+					Description: "Host para buscar os IPs/servidores",
+					Required:    true,
+				},
+			},
+		})
+		if err != nil {
+			log.Fatalf("Erro ao registrar o comando %s: %v", command.Name, err)
+		}
+	}
+
+	// Adicionando comando /ping
+	_, err = dg.ApplicationCommandCreate(dg.State.User.ID, "", &discordgo.ApplicationCommand{
+		Name:        "ping",
+		Description: "Verifica se o bot está online",
+	})
+	if err != nil {
+		log.Fatalf("Erro ao registrar o comando ping: %v", err)
+	}
+
+	// Adicionando comando /ip
+	_, err = dg.ApplicationCommandCreate(dg.State.User.ID, "", &discordgo.ApplicationCommand{
+		Name:        "ip",
+		Description: "Busca IPs na net",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "host",
+				Description: "Host para buscar os IPs",
+				Required:    true,
+			},
+		},
+	})
+	if err != nil {
+		log.Fatalf("Erro ao registrar o comando ip: %v", err)
+	}
+
+	// Adicionando comando /servidores
+	_, err = dg.ApplicationCommandCreate(dg.State.User.ID, "", &discordgo.ApplicationCommand{
+		Name:        "servidores",
+		Description: "Busca o nome dos servidores na internet",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "host",
+				Description: "Host para buscar os servidores",
+				Required:    true,
+			},
+		},
+	})
+	if err != nil {
+		log.Fatalf("Erro ao registrar o comando servidores: %v", err)
+	}
+
 	fmt.Println("Bot está rodando. Pressione CTRL-C para sair.")
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	<-sc
-	defer dg.Close()
+	defer dg.Close() // Fecha a conexão com o discord no final da execução
 
 	app.Commands = []cli.Command{
 		{
@@ -72,36 +135,76 @@ func Gerar() *cli.App {
 			Action: buscarServidores,
 		},
 	}
+
 	return app
 }
 
-// messageHandler lida com as mensagens recebidas no Discord
-func messageHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
-
-	if m.Author.ID == s.State.User.ID {
+// interactionHandler lida com as interações com os comandos de barra
+func interactionHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i.Type != discordgo.InteractionApplicationCommand {
 		return
 	}
 
-	if strings.HasPrefix(m.Content, "!ip ") { // Verifica se a mensagem começa com "!ip "
-		host := strings.TrimPrefix(m.Content, "!ip ")
+	commandData := i.ApplicationCommandData()
+	host := commandData.Options[0].StringValue() // Obtém o argumento "host" do comando de barra
+
+	switch commandData.Name {
+	case "ping":
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "Pong!",
+			},
+		})
+	case "ip":
 		ips, err := net.LookupIP(host)
 		if err != nil {
-			log.Println("Erro ao buscar IPs:", err)
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: fmt.Sprintf("Erro ao buscar IPs para %s: %v", host, err),
+				},
+			})
 			return
 		}
+		response := fmt.Sprintf("IPs de %s:\n", host)
 		for _, ip := range ips {
-			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("IP de %s: %s", host, ip))
+			response += fmt.Sprintf("- %s\n", ip)
 		}
-	} else if strings.HasPrefix(m.Content, "!servidores ") { // Verifica se a mensagem começa com "!servidores "
-		host := strings.TrimPrefix(m.Content, "!servidores ")
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: response,
+			},
+		})
+	case "servidores":
 		servidores, err := net.LookupNS(host)
 		if err != nil {
-			log.Println("Erro ao buscar servidores:", err)
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: fmt.Sprintf("Erro ao buscar servidores para %s: %v", host, err),
+				},
+			})
 			return
 		}
+		response := fmt.Sprintf("Servidores de %s:\n", host)
 		for _, servidor := range servidores {
-			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Servidor de %s: %s", host, servidor.Host))
+			response += fmt.Sprintf("- %s\n", servidor.Host)
 		}
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: response,
+			},
+		})
+	default:
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "Comando inválido!",
+			},
+		})
 	}
 }
 
